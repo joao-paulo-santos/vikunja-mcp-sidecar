@@ -74,32 +74,18 @@ func (c *Client) delete(path string) ([]byte, error) {
 	return c.doRequest("DELETE", path, nil)
 }
 
-type Namespace struct {
-	ID          int64    `json:"id"`
-	Title       string   `json:"title"`
-	Description string   `json:"description"`
-	Projects    []Project `json:"lists"`
-}
-
-func (c *Client) ListNamespaces() ([]Namespace, error) {
-	body, err := c.get("/api/v1/namespaces")
-	if err != nil {
-		return nil, err
-	}
-	var namespaces []Namespace
-	if err := json.Unmarshal(body, &namespaces); err != nil {
-		return nil, fmt.Errorf("unmarshal namespaces: %w", err)
-	}
-	return namespaces, nil
-}
-
 type Project struct {
-	ID          int64  `json:"id"`
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	NamespaceID int64  `json:"namespace_id"`
-	IsArchived  bool   `json:"is_archived"`
-	Position    int64  `json:"position"`
+	ID              int64  `json:"id"`
+	Title           string `json:"title"`
+	Description     string `json:"description"`
+	ParentProjectID int64  `json:"parent_project_id"`
+	IsArchived      bool   `json:"is_archived"`
+	IsFavorite      bool   `json:"is_favorite"`
+	Position        int64  `json:"position"`
+	HexColor        string `json:"hex_color"`
+	Owner           *User  `json:"owner,omitempty"`
+	Created         string `json:"created"`
+	Updated         string `json:"updated"`
 }
 
 func (c *Client) ListProjects() ([]Project, error) {
@@ -127,9 +113,10 @@ func (c *Client) GetProject(id int64) (*Project, error) {
 }
 
 type CreateProjectParams struct {
-	Title       string `json:"title"`
-	NamespaceID int64  `json:"namespace_id"`
-	Description string `json:"description,omitempty"`
+	Title           string `json:"title"`
+	ParentProjectID int64  `json:"parent_project_id,omitempty"`
+	Description     string `json:"description,omitempty"`
+	HexColor        string `json:"hex_color,omitempty"`
 }
 
 func (c *Client) CreateProject(params CreateProjectParams) (*Project, error) {
@@ -145,10 +132,12 @@ func (c *Client) CreateProject(params CreateProjectParams) (*Project, error) {
 }
 
 type UpdateProjectParams struct {
-	Title       string `json:"title,omitempty"`
-	Description string `json:"description,omitempty"`
-	IsArchived  *bool  `json:"is_archived,omitempty"`
-	Position    *int64 `json:"position,omitempty"`
+	Title           string `json:"title,omitempty"`
+	Description     string `json:"description,omitempty"`
+	IsArchived      *bool  `json:"is_archived,omitempty"`
+	ParentProjectID *int64 `json:"parent_project_id,omitempty"`
+	Position        *int64 `json:"position,omitempty"`
+	HexColor        string `json:"hex_color,omitempty"`
 }
 
 func (c *Client) UpdateProject(id int64, params UpdateProjectParams) (*Project, error) {
@@ -198,7 +187,7 @@ type Label struct {
 }
 
 func (c *Client) ListTasks(projectID *int64) ([]Task, error) {
-	path := "/api/v1/tasks/all"
+	path := "/api/v1/tasks"
 	if projectID != nil {
 		path += "?filter=project_id%3D" + strconv.FormatInt(*projectID, 10)
 	}
@@ -336,4 +325,30 @@ func (c *Client) CreateTaskComment(taskID int64, comment string) (*Comment, erro
 		return nil, fmt.Errorf("unmarshal comment: %w", err)
 	}
 	return &cmt, nil
+}
+
+func (c *Client) ListTaskAssignees(taskID int64) ([]User, error) {
+	body, err := c.get("/api/v1/tasks/" + strconv.FormatInt(taskID, 10) + "/assignees")
+	if err != nil {
+		return nil, err
+	}
+	var users []User
+	if err := json.Unmarshal(body, &users); err != nil {
+		return nil, fmt.Errorf("unmarshal assignees: %w", err)
+	}
+	return users, nil
+}
+
+type AddTaskAssigneeParams struct {
+	UserID int64 `json:"user_id"`
+}
+
+func (c *Client) AddTaskAssignee(taskID, userID int64) error {
+	_, err := c.put("/api/v1/tasks/"+strconv.FormatInt(taskID, 10)+"/assignees", AddTaskAssigneeParams{UserID: userID})
+	return err
+}
+
+func (c *Client) RemoveTaskAssignee(taskID, userID int64) error {
+	_, err := c.delete("/api/v1/tasks/" + strconv.FormatInt(taskID, 10) + "/assignees/" + strconv.FormatInt(userID, 10))
+	return err
 }

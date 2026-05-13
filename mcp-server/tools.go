@@ -14,7 +14,6 @@ type toolDeps struct {
 }
 
 func registerTools(s *server.MCPServer, deps *toolDeps) {
-	s.AddTool(listNamespacesTool(), deps.handleListNamespaces)
 	s.AddTool(listProjectsTool(), deps.handleListProjects)
 	s.AddTool(getProjectTool(), deps.handleGetProject)
 	s.AddTool(createProjectTool(), deps.handleCreateProject)
@@ -27,6 +26,9 @@ func registerTools(s *server.MCPServer, deps *toolDeps) {
 	s.AddTool(deleteTaskTool(), deps.handleDeleteTask)
 	s.AddTool(listTaskCommentsTool(), deps.handleListTaskComments)
 	s.AddTool(addTaskCommentTool(), deps.handleAddTaskComment)
+	s.AddTool(listTaskAssigneesTool(), deps.handleListTaskAssignees)
+	s.AddTool(addTaskAssigneeTool(), deps.handleAddTaskAssignee)
+	s.AddTool(removeTaskAssigneeTool(), deps.handleRemoveTaskAssignee)
 	s.AddTool(listLabelsTool(), deps.handleListLabels)
 	s.AddTool(createLabelTool(), deps.handleCreateLabel)
 }
@@ -43,24 +45,9 @@ func toolResult(v any) (*mcp.CallToolResult, error) {
 	return mcp.NewToolResultText(string(data)), nil
 }
 
-func listNamespacesTool() mcp.Tool {
-	return mcp.NewTool("list_namespaces",
-		mcp.WithDescription("List all namespaces with their projects. Namespaces are the top-level organization unit in Vikunja."),
-		mcp.WithReadOnlyHintAnnotation(true),
-	)
-}
-
-func (d *toolDeps) handleListNamespaces(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	namespaces, err := d.client.ListNamespaces()
-	if err != nil {
-		return toolError("list namespaces: %v", err)
-	}
-	return toolResult(namespaces)
-}
-
 func listProjectsTool() mcp.Tool {
 	return mcp.NewTool("list_projects",
-		mcp.WithDescription("List all projects across all namespaces."),
+		mcp.WithDescription("List all projects. Projects can be nested hierarchically using parent_project_id."),
 		mcp.WithReadOnlyHintAnnotation(true),
 	)
 }
@@ -95,10 +82,11 @@ func (d *toolDeps) handleGetProject(_ context.Context, req mcp.CallToolRequest) 
 
 func createProjectTool() mcp.Tool {
 	return mcp.NewTool("create_project",
-		mcp.WithDescription("Create a new project in a namespace."),
+		mcp.WithDescription("Create a new project. Optionally nest it under a parent project."),
 		mcp.WithString("title", mcp.Required(), mcp.Description("Project title")),
-		mcp.WithInteger("namespace_id", mcp.Required(), mcp.Description("The namespace ID to create the project in")),
+		mcp.WithInteger("parent_project_id", mcp.Description("Parent project ID for nesting (optional, creates a top-level project if omitted)")),
 		mcp.WithString("description", mcp.Description("Project description")),
+		mcp.WithString("hex_color", mcp.Description("Project color as hex code (e.g. #FF0000)")),
 	)
 }
 
@@ -107,17 +95,18 @@ func (d *toolDeps) handleCreateProject(_ context.Context, req mcp.CallToolReques
 	if err != nil {
 		return toolError("title: %v", err)
 	}
-	namespaceID, err := req.RequireInt("namespace_id")
-	if err != nil {
-		return toolError("namespace_id: %v", err)
-	}
-	description := req.GetString("description", "")
 
-	project, err := d.client.CreateProject(CreateProjectParams{
+	params := CreateProjectParams{
 		Title:       title,
-		NamespaceID: int64(namespaceID),
-		Description: description,
-	})
+		Description: req.GetString("description", ""),
+		HexColor:    req.GetString("hex_color", ""),
+	}
+	if v := req.GetInt("parent_project_id", 0); v > 0 {
+		pid := int64(v)
+		params.ParentProjectID = pid
+	}
+
+	project, err := d.client.CreateProject(params)
 	if err != nil {
 		return toolError("create project: %v", err)
 	}
@@ -437,5 +426,71 @@ func (d *toolDeps) handleCreateLabel(_ context.Context, req mcp.CallToolRequest)
 		return toolError("create label: %v", err)
 	}
 	return toolResult(label)
+}
+
+func listTaskAssigneesTool() mcp.Tool {
+	return mcp.NewTool("list_task_assignees",
+		mcp.WithDescription("List all users assigned to a task."),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithInteger("task_id", mcp.Required(), mcp.Description("The task ID")),
+	)
+}
+
+func (d *toolDeps) handleListTaskAssignees(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	taskID, err := req.RequireInt("task_id")
+	if err != nil {
+		return toolError("task_id: %v", err)
+	}
+	users, err := d.client.ListTaskAssignees(int64(taskID))
+	if err != nil {
+		return toolError("list assignees: %v", err)
+	}
+	return toolResult(users)
+}
+
+func addTaskAssigneeTool() mcp.Tool {
+	return mcp.NewTool("add_task_assignee",
+		mcp.WithDescription("Assign a user to a task. The user needs access to the project."),
+		mcp.WithInteger("task_id", mcp.Required(), mcp.Description("The task ID")),
+		mcp.WithInteger("user_id", mcp.Required(), mcp.Description("The user ID to assign")),
+	)
+}
+
+func (d *toolDeps) handleAddTaskAssignee(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	taskID, err := req.RequireInt("task_id")
+	if err != nil {
+		return toolError("task_id: %v", err)
+	}
+	userID, err := req.RequireInt("user_id")
+	if err != nil {
+		return toolError("user_id: %v", err)
+	}
+	if err := d.client.AddTaskAssignee(int64(taskID), int64(userID)); err != nil {
+		return toolError("add assignee: %v", err)
+	}
+	return mcp.NewToolResultText(fmt.Sprintf("User %d assigned to task %d", userID, taskID)), nil
+}
+
+func removeTaskAssigneeTool() mcp.Tool {
+	return mcp.NewTool("remove_task_assignee",
+		mcp.WithDescription("Remove a user assignment from a task."),
+		mcp.WithInteger("task_id", mcp.Required(), mcp.Description("The task ID")),
+		mcp.WithInteger("user_id", mcp.Required(), mcp.Description("The user ID to unassign")),
+	)
+}
+
+func (d *toolDeps) handleRemoveTaskAssignee(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	taskID, err := req.RequireInt("task_id")
+	if err != nil {
+		return toolError("task_id: %v", err)
+	}
+	userID, err := req.RequireInt("user_id")
+	if err != nil {
+		return toolError("user_id: %v", err)
+	}
+	if err := d.client.RemoveTaskAssignee(int64(taskID), int64(userID)); err != nil {
+		return toolError("remove assignee: %v", err)
+	}
+	return mcp.NewToolResultText(fmt.Sprintf("User %d unassigned from task %d", userID, taskID)), nil
 }
 
