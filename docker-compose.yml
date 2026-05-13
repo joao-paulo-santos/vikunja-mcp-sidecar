@@ -1,0 +1,39 @@
+services:
+  vikunja:
+    container_name: vikunja
+    image: vikunja/vikunja:2.3.0
+    environment:
+      VIKUNJA_SERVICE_PUBLICURL: http://${VIKUNJA_PUBLIC_URL}:3456/
+      VIKUNJA_SERVICE_SECRET: ${VIKUNJA_SERVICE_SECRET}
+      VIKUNJA_DATABASE_PATH: /db/vikunja.db
+    ports:
+      - 3456:3456
+    volumes:
+      - ./files:/app/vikunja/files
+      - ./db:/db
+    networks:
+      proxy-net:
+        ipv4_address: 172.19.2.4
+    restart: unless-stopped
+
+  mcp:
+    container_name: vikunja-mcp
+    build: ./mcp-server
+    environment:
+      VIKUNJA_API_URL: ${VIKUNJA_API_URL}
+      VIKUNJA_API_TOKEN: ${VIKUNJA_API_TOKEN}
+    ports:
+      - 3666:3666
+    depends_on:
+      - vikunja
+    networks:
+      proxy-net:
+        ipv4_address: 172.19.2.5
+    restart: unless-stopped
+
+networks:
+  proxy-net:
+    external: true
+    ipam:
+      config:
+        - subnet: 172.19.0.0/1

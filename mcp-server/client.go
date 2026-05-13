@@ -1,0 +1,339 @@
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"strconv"
+)
+
+type Client struct {
+	BaseURL    string
+	Token      string
+	HTTPClient *http.Client
+}
+
+func NewClient(baseURL, token string) *Client {
+	return &Client{
+		BaseURL:    baseURL,
+		Token:      token,
+		HTTPClient: &http.Client{},
+	}
+}
+
+func (c *Client) doRequest(method, path string, body any) ([]byte, error) {
+	var reqBody io.Reader
+	if body != nil {
+		data, err := json.Marshal(body)
+		if err != nil {
+			return nil, fmt.Errorf("marshal body: %w", err)
+		}
+		reqBody = bytes.NewReader(data)
+	}
+
+	req, err := http.NewRequest(method, c.BaseURL+path, reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("execute request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read response: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	return respBody, nil
+}
+
+func (c *Client) get(path string) ([]byte, error) {
+	return c.doRequest("GET", path, nil)
+}
+
+func (c *Client) put(path string, body any) ([]byte, error) {
+	return c.doRequest("PUT", path, body)
+}
+
+func (c *Client) post(path string, body any) ([]byte, error) {
+	return c.doRequest("POST", path, body)
+}
+
+func (c *Client) delete(path string) ([]byte, error) {
+	return c.doRequest("DELETE", path, nil)
+}
+
+type Namespace struct {
+	ID          int64    `json:"id"`
+	Title       string   `json:"title"`
+	Description string   `json:"description"`
+	Projects    []Project `json:"lists"`
+}
+
+func (c *Client) ListNamespaces() ([]Namespace, error) {
+	body, err := c.get("/api/v1/namespaces")
+	if err != nil {
+		return nil, err
+	}
+	var namespaces []Namespace
+	if err := json.Unmarshal(body, &namespaces); err != nil {
+		return nil, fmt.Errorf("unmarshal namespaces: %w", err)
+	}
+	return namespaces, nil
+}
+
+type Project struct {
+	ID          int64  `json:"id"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	NamespaceID int64  `json:"namespace_id"`
+	IsArchived  bool   `json:"is_archived"`
+	Position    int64  `json:"position"`
+}
+
+func (c *Client) ListProjects() ([]Project, error) {
+	body, err := c.get("/api/v1/projects")
+	if err != nil {
+		return nil, err
+	}
+	var projects []Project
+	if err := json.Unmarshal(body, &projects); err != nil {
+		return nil, fmt.Errorf("unmarshal projects: %w", err)
+	}
+	return projects, nil
+}
+
+func (c *Client) GetProject(id int64) (*Project, error) {
+	body, err := c.get("/api/v1/projects/" + strconv.FormatInt(id, 10))
+	if err != nil {
+		return nil, err
+	}
+	var project Project
+	if err := json.Unmarshal(body, &project); err != nil {
+		return nil, fmt.Errorf("unmarshal project: %w", err)
+	}
+	return &project, nil
+}
+
+type CreateProjectParams struct {
+	Title       string `json:"title"`
+	NamespaceID int64  `json:"namespace_id"`
+	Description string `json:"description,omitempty"`
+}
+
+func (c *Client) CreateProject(params CreateProjectParams) (*Project, error) {
+	body, err := c.put("/api/v1/projects", params)
+	if err != nil {
+		return nil, err
+	}
+	var project Project
+	if err := json.Unmarshal(body, &project); err != nil {
+		return nil, fmt.Errorf("unmarshal project: %w", err)
+	}
+	return &project, nil
+}
+
+type UpdateProjectParams struct {
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
+	IsArchived  *bool  `json:"is_archived,omitempty"`
+	Position    *int64 `json:"position,omitempty"`
+}
+
+func (c *Client) UpdateProject(id int64, params UpdateProjectParams) (*Project, error) {
+	body, err := c.post("/api/v1/projects/"+strconv.FormatInt(id, 10), params)
+	if err != nil {
+		return nil, err
+	}
+	var project Project
+	if err := json.Unmarshal(body, &project); err != nil {
+		return nil, fmt.Errorf("unmarshal project: %w", err)
+	}
+	return &project, nil
+}
+
+func (c *Client) DeleteProject(id int64) error {
+	_, err := c.delete("/api/v1/projects/" + strconv.FormatInt(id, 10))
+	return err
+}
+
+type Task struct {
+	ID          int64    `json:"id"`
+	Title       string   `json:"title"`
+	Description string   `json:"description"`
+	Done        bool     `json:"done"`
+	DoneAt      *string  `json:"done_at"`
+	DueDate     string   `json:"due_date"`
+	Priority    int64    `json:"priority"`
+	ProjectID   int64    `json:"project_id"`
+	Labels      []Label  `json:"labels"`
+	Assignees   []User   `json:"assignees"`
+	Created     string   `json:"created"`
+	Updated     string   `json:"updated"`
+}
+
+type User struct {
+	ID       int64  `json:"id"`
+	Name     string `json:"name"`
+	Username string `json:"username"`
+	Email    string `json:"email"`
+}
+
+type Label struct {
+	ID          int64  `json:"id"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	HexColor    string `json:"hex_color"`
+}
+
+func (c *Client) ListTasks(projectID *int64) ([]Task, error) {
+	path := "/api/v1/tasks/all"
+	if projectID != nil {
+		path += "?filter=project_id%3D" + strconv.FormatInt(*projectID, 10)
+	}
+	body, err := c.get(path)
+	if err != nil {
+		return nil, err
+	}
+	var tasks []Task
+	if err := json.Unmarshal(body, &tasks); err != nil {
+		return nil, fmt.Errorf("unmarshal tasks: %w", err)
+	}
+	return tasks, nil
+}
+
+func (c *Client) GetTask(id int64) (*Task, error) {
+	body, err := c.get("/api/v1/tasks/" + strconv.FormatInt(id, 10))
+	if err != nil {
+		return nil, err
+	}
+	var task Task
+	if err := json.Unmarshal(body, &task); err != nil {
+		return nil, fmt.Errorf("unmarshal task: %w", err)
+	}
+	return &task, nil
+}
+
+type CreateTaskParams struct {
+	Title       string `json:"title"`
+	Description string `json:"description,omitempty"`
+	DueDate     string `json:"due_date,omitempty"`
+	Priority    *int64 `json:"priority,omitempty"`
+	Labels      []int64 `json:"labels,omitempty"`
+}
+
+func (c *Client) CreateTask(projectID int64, params CreateTaskParams) (*Task, error) {
+	body, err := c.put("/api/v1/projects/"+strconv.FormatInt(projectID, 10)+"/tasks", params)
+	if err != nil {
+		return nil, err
+	}
+	var task Task
+	if err := json.Unmarshal(body, &task); err != nil {
+		return nil, fmt.Errorf("unmarshal task: %w", err)
+	}
+	return &task, nil
+}
+
+type UpdateTaskParams struct {
+	Title       string   `json:"title,omitempty"`
+	Description string   `json:"description,omitempty"`
+	Done        *bool    `json:"done,omitempty"`
+	DueDate     string   `json:"due_date,omitempty"`
+	Priority    *int64   `json:"priority,omitempty"`
+	ProjectID   *int64   `json:"project_id,omitempty"`
+	Labels      []int64  `json:"labels,omitempty"`
+}
+
+func (c *Client) UpdateTask(id int64, params UpdateTaskParams) (*Task, error) {
+	body, err := c.post("/api/v1/tasks/"+strconv.FormatInt(id, 10), params)
+	if err != nil {
+		return nil, err
+	}
+	var task Task
+	if err := json.Unmarshal(body, &task); err != nil {
+		return nil, fmt.Errorf("unmarshal task: %w", err)
+	}
+	return &task, nil
+}
+
+func (c *Client) DeleteTask(id int64) error {
+	_, err := c.delete("/api/v1/tasks/" + strconv.FormatInt(id, 10))
+	return err
+}
+
+func (c *Client) ListLabels() ([]Label, error) {
+	body, err := c.get("/api/v1/labels")
+	if err != nil {
+		return nil, err
+	}
+	var labels []Label
+	if err := json.Unmarshal(body, &labels); err != nil {
+		return nil, fmt.Errorf("unmarshal labels: %w", err)
+	}
+	return labels, nil
+}
+
+type CreateLabelParams struct {
+	Title       string `json:"title"`
+	Description string `json:"description,omitempty"`
+	HexColor    string `json:"hex_color,omitempty"`
+}
+
+func (c *Client) CreateLabel(params CreateLabelParams) (*Label, error) {
+	body, err := c.put("/api/v1/labels", params)
+	if err != nil {
+		return nil, err
+	}
+	var label Label
+	if err := json.Unmarshal(body, &label); err != nil {
+		return nil, fmt.Errorf("unmarshal label: %w", err)
+	}
+	return &label, nil
+}
+
+type Comment struct {
+	ID        int64  `json:"id"`
+	Comment   string `json:"comment"`
+	Author    User   `json:"author"`
+	Created   string `json:"created"`
+	Updated   string `json:"updated"`
+}
+
+func (c *Client) ListTaskComments(taskID int64) ([]Comment, error) {
+	body, err := c.get("/api/v1/tasks/" + strconv.FormatInt(taskID, 10) + "/comments")
+	if err != nil {
+		return nil, err
+	}
+	var comments []Comment
+	if err := json.Unmarshal(body, &comments); err != nil {
+		return nil, fmt.Errorf("unmarshal comments: %w", err)
+	}
+	return comments, nil
+}
+
+type CreateCommentParams struct {
+	Comment string `json:"comment"`
+}
+
+func (c *Client) CreateTaskComment(taskID int64, comment string) (*Comment, error) {
+	body, err := c.put("/api/v1/tasks/"+strconv.FormatInt(taskID, 10)+"/comments", CreateCommentParams{Comment: comment})
+	if err != nil {
+		return nil, err
+	}
+	var cmt Comment
+	if err := json.Unmarshal(body, &cmt); err != nil {
+		return nil, fmt.Errorf("unmarshal comment: %w", err)
+	}
+	return &cmt, nil
+}
