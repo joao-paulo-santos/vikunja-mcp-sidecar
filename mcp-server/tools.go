@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -31,6 +33,11 @@ func registerTools(s *server.MCPServer, deps *toolDeps) {
 	s.AddTool(removeTaskAssigneeTool(), deps.handleRemoveTaskAssignee)
 	s.AddTool(listLabelsTool(), deps.handleListLabels)
 	s.AddTool(createLabelTool(), deps.handleCreateLabel)
+	s.AddTool(addTaskLabelTool(), deps.handleAddTaskLabel)
+	s.AddTool(removeTaskLabelTool(), deps.handleRemoveTaskLabel)
+	s.AddTool(listViewsTool(), deps.handleListViews)
+	s.AddTool(listBucketsTool(), deps.handleListBuckets)
+	s.AddTool(moveTaskToBucketTool(), deps.handleMoveTaskToBucket)
 }
 
 func toolError(format string, args ...any) (*mcp.CallToolResult, error) {
@@ -218,13 +225,33 @@ func (d *toolDeps) handleGetTask(_ context.Context, req mcp.CallToolRequest) (*m
 
 func createTaskTool() mcp.Tool {
 	return mcp.NewTool("create_task",
-		mcp.WithDescription("Create a new task in a project."),
+		mcp.WithDescription("Create a new task in a project. Labels can be set at creation time."),
 		mcp.WithInteger("project_id", mcp.Required(), mcp.Description("The project ID to create the task in")),
 		mcp.WithString("title", mcp.Required(), mcp.Description("Task title")),
 		mcp.WithString("description", mcp.Description("Task description in markdown")),
 		mcp.WithString("due_date", mcp.Description("Due date in ISO 8601 format (e.g. 2025-12-31T00:00:00Z)")),
 		mcp.WithInteger("priority", mcp.Description("Task priority (1=urgent, 2=high, 3=medium, 4=low, 5=none)")),
+		mcp.WithString("labels", mcp.Description("Comma-separated label IDs to assign (e.g. \"1,3\")")),
 	)
+}
+
+func parseIntList(s string) []int64 {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	var ids []int64
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		n, err := strconv.ParseInt(p, 10, 64)
+		if err == nil {
+			ids = append(ids, n)
+		}
+	}
+	return ids
 }
 
 func (d *toolDeps) handleCreateTask(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -254,6 +281,14 @@ func (d *toolDeps) handleCreateTask(_ context.Context, req mcp.CallToolRequest) 
 		}
 	}
 
+	if labelIDs := parseIntList(req.GetString("labels", "")); len(labelIDs) > 0 {
+		refs := make([]LabelRef, len(labelIDs))
+		for i, id := range labelIDs {
+			refs[i] = LabelRef{ID: id}
+		}
+		params.Labels = refs
+	}
+
 	task, err := d.client.CreateTask(int64(projectID), params)
 	if err != nil {
 		return toolError("create task: %v", err)
@@ -263,7 +298,7 @@ func (d *toolDeps) handleCreateTask(_ context.Context, req mcp.CallToolRequest) 
 
 func updateTaskTool() mcp.Tool {
 	return mcp.NewTool("update_task",
-		mcp.WithDescription("Update an existing task's properties. Use this to mark tasks as done, change titles, reassign projects, etc."),
+		mcp.WithDescription("Update an existing task's properties. Use this to mark tasks as done, change titles, reassign projects, set labels, etc."),
 		mcp.WithInteger("id", mcp.Required(), mcp.Description("The task ID to update")),
 		mcp.WithString("title", mcp.Description("New task title")),
 		mcp.WithString("description", mcp.Description("New task description")),
@@ -271,6 +306,7 @@ func updateTaskTool() mcp.Tool {
 		mcp.WithString("due_date", mcp.Description("New due date in ISO 8601 format")),
 		mcp.WithInteger("priority", mcp.Description("New priority (1=urgent, 2=high, 3=medium, 4=low, 5=none)")),
 		mcp.WithInteger("project_id", mcp.Description("Move task to a different project")),
+		mcp.WithString("labels", mcp.Description("Comma-separated label IDs to set on the task (e.g. \"1,3\"). Replaces all existing labels.")),
 	)
 }
 
@@ -319,6 +355,14 @@ func (d *toolDeps) handleUpdateTask(_ context.Context, req mcp.CallToolRequest) 
 	if err != nil {
 		return toolError("update task: %v", err)
 	}
+
+	if labelIDs := parseIntList(req.GetString("labels", "")); len(labelIDs) > 0 {
+		if err := d.client.BulkUpdateTaskLabels(int64(id), labelIDs); err != nil {
+			return toolError("update labels: %v", err)
+		}
+		task, _ = d.client.GetTask(int64(id))
+	}
+
 	return toolResult(task)
 }
 
@@ -492,5 +536,167 @@ func (d *toolDeps) handleRemoveTaskAssignee(_ context.Context, req mcp.CallToolR
 		return toolError("remove assignee: %v", err)
 	}
 	return mcp.NewToolResultText(fmt.Sprintf("User %d unassigned from task %d", userID, taskID)), nil
+}
+
+func addTaskLabelTool() mcp.Tool {
+	return mcp.NewTool("add_task_label",
+		mcp.WithDescription("Add a label to a task."),
+		mcp.WithInteger("task_id", mcp.Required(), mcp.Description("The task ID")),
+		mcp.WithInteger("label_id", mcp.Required(), mcp.Description("The label ID to add")),
+	)
+}
+
+func (d *toolDeps) handleAddTaskLabel(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	taskID, err := req.RequireInt("task_id")
+	if err != nil {
+		return toolError("task_id: %v", err)
+	}
+	labelID, err := req.RequireInt("label_id")
+	if err != nil {
+		return toolError("label_id: %v", err)
+	}
+	if err := d.client.AddTaskLabel(int64(taskID), int64(labelID)); err != nil {
+		return toolError("add label: %v", err)
+	}
+	return mcp.NewToolResultText(fmt.Sprintf("Label %d added to task %d", labelID, taskID)), nil
+}
+
+func removeTaskLabelTool() mcp.Tool {
+	return mcp.NewTool("remove_task_label",
+		mcp.WithDescription("Remove a label from a task."),
+		mcp.WithInteger("task_id", mcp.Required(), mcp.Description("The task ID")),
+		mcp.WithInteger("label_id", mcp.Required(), mcp.Description("The label ID to remove")),
+	)
+}
+
+func (d *toolDeps) handleRemoveTaskLabel(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	taskID, err := req.RequireInt("task_id")
+	if err != nil {
+		return toolError("task_id: %v", err)
+	}
+	labelID, err := req.RequireInt("label_id")
+	if err != nil {
+		return toolError("label_id: %v", err)
+	}
+	if err := d.client.RemoveTaskLabel(int64(taskID), int64(labelID)); err != nil {
+		return toolError("remove label: %v", err)
+	}
+	return mcp.NewToolResultText(fmt.Sprintf("Label %d removed from task %d", labelID, taskID)), nil
+}
+
+func listViewsTool() mcp.Tool {
+	return mcp.NewTool("list_views",
+		mcp.WithDescription("List all views (list, gantt, table, kanban) for a project."),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithInteger("project_id", mcp.Required(), mcp.Description("The project ID")),
+	)
+}
+
+func (d *toolDeps) handleListViews(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	projectID, err := req.RequireInt("project_id")
+	if err != nil {
+		return toolError("project_id: %v", err)
+	}
+	views, err := d.client.ListProjectViews(int64(projectID))
+	if err != nil {
+		return toolError("list views: %v", err)
+	}
+	return toolResult(views)
+}
+
+func listBucketsTool() mcp.Tool {
+	return mcp.NewTool("list_buckets",
+		mcp.WithDescription("List all Kanban buckets for a project view. If view_id is omitted, uses the first kanban view."),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithInteger("project_id", mcp.Required(), mcp.Description("The project ID")),
+		mcp.WithInteger("view_id", mcp.Description("The view ID (defaults to first kanban view)")),
+	)
+}
+
+func (d *toolDeps) handleListBuckets(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	projectID, err := req.RequireInt("project_id")
+	if err != nil {
+		return toolError("project_id: %v", err)
+	}
+
+	var viewID int64
+	if v := req.GetInt("view_id", 0); v > 0 {
+		viewID = int64(v)
+	} else {
+		views, err := d.client.ListProjectViews(int64(projectID))
+		if err != nil {
+			return toolError("list views: %v", err)
+		}
+		for _, v := range views {
+			if v.ViewKind == "kanban" {
+				viewID = v.ID
+				break
+			}
+		}
+		if viewID == 0 && len(views) > 0 {
+			viewID = views[0].ID
+		}
+	}
+	if viewID == 0 {
+		return toolError("no views found for project %d", projectID)
+	}
+
+	buckets, err := d.client.ListBuckets(int64(projectID), viewID)
+	if err != nil {
+		return toolError("list buckets: %v", err)
+	}
+	return toolResult(buckets)
+}
+
+func moveTaskToBucketTool() mcp.Tool {
+	return mcp.NewTool("move_task_to_bucket",
+		mcp.WithDescription("Move a task to a different Kanban bucket. Auto-discovers the kanban view if view_id is omitted."),
+		mcp.WithInteger("task_id", mcp.Required(), mcp.Description("The task ID to move")),
+		mcp.WithInteger("project_id", mcp.Required(), mcp.Description("The project ID")),
+		mcp.WithInteger("bucket_id", mcp.Required(), mcp.Description("The target bucket ID")),
+		mcp.WithInteger("view_id", mcp.Description("The kanban view ID (auto-discovered if omitted)")),
+	)
+}
+
+func (d *toolDeps) handleMoveTaskToBucket(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	taskID, err := req.RequireInt("task_id")
+	if err != nil {
+		return toolError("task_id: %v", err)
+	}
+	projectID, err := req.RequireInt("project_id")
+	if err != nil {
+		return toolError("project_id: %v", err)
+	}
+	bucketID, err := req.RequireInt("bucket_id")
+	if err != nil {
+		return toolError("bucket_id: %v", err)
+	}
+
+	var viewID int64
+	if v := req.GetInt("view_id", 0); v > 0 {
+		viewID = int64(v)
+	} else {
+		views, err := d.client.ListProjectViews(int64(projectID))
+		if err != nil {
+			return toolError("list views: %v", err)
+		}
+		for _, v := range views {
+			if v.ViewKind == "kanban" {
+				viewID = v.ID
+				break
+			}
+		}
+		if viewID == 0 && len(views) > 0 {
+			viewID = views[0].ID
+		}
+	}
+	if viewID == 0 {
+		return toolError("no views found for project %d", projectID)
+	}
+
+	if err := d.client.MoveTaskToBucket(int64(projectID), viewID, int64(bucketID), int64(taskID)); err != nil {
+		return toolError("move task: %v", err)
+	}
+	return mcp.NewToolResultText(fmt.Sprintf("Task %d moved to bucket %d", taskID, bucketID)), nil
 }
 

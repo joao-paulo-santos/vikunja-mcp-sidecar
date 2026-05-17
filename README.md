@@ -25,13 +25,21 @@ An MCP (Model Context Protocol) server that runs as a Docker sidecar alongside [
 | `delete_project` | Delete a project and all its tasks |
 | `list_tasks` | List tasks, optionally filtered by project |
 | `get_task` | Get full task details by ID |
-| `create_task` | Create a task with title, description, due date, priority |
-| `update_task` | Update task properties, mark as done, move between projects |
+| `create_task` | Create a task with title, description, due date, priority, and labels |
+| `update_task` | Update task properties, mark as done, move between projects, set labels |
 | `delete_task` | Delete a task |
 | `list_task_comments` | List comments on a task |
 | `add_task_comment` | Add a comment to a task |
+| `list_task_assignees` | List users assigned to a task |
+| `add_task_assignee` | Assign a user to a task |
+| `remove_task_assignee` | Remove a user from a task |
 | `list_labels` | List all labels |
 | `create_label` | Create a new label with title and color |
+| `add_task_label` | Add a label to a task |
+| `remove_task_label` | Remove a label from a task |
+| `list_views` | List all views (list, gantt, table, kanban) for a project |
+| `list_buckets` | List Kanban buckets for a project view |
+| `move_task_to_bucket` | Move a task to a different Kanban bucket |
 
 ## Quick Start
 

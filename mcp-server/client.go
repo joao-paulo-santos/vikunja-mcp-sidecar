@@ -272,12 +272,16 @@ func (c *Client) GetTask(id int64) (*Task, error) {
 	return &task, nil
 }
 
+type LabelRef struct {
+	ID int64 `json:"id"`
+}
+
 type CreateTaskParams struct {
-	Title       string `json:"title"`
-	Description string `json:"description,omitempty"`
-	DueDate     string `json:"due_date,omitempty"`
-	Priority    *int64 `json:"priority,omitempty"`
-	Labels      []int64 `json:"labels,omitempty"`
+	Title       string     `json:"title"`
+	Description string     `json:"description,omitempty"`
+	DueDate     string     `json:"due_date,omitempty"`
+	Priority    *int64     `json:"priority,omitempty"`
+	Labels      []LabelRef `json:"labels,omitempty"`
 }
 
 func (c *Client) CreateTask(projectID int64, params CreateTaskParams) (*Task, error) {
@@ -293,13 +297,13 @@ func (c *Client) CreateTask(projectID int64, params CreateTaskParams) (*Task, er
 }
 
 type UpdateTaskParams struct {
-	Title       string   `json:"title,omitempty"`
-	Description string   `json:"description,omitempty"`
-	Done        *bool    `json:"done,omitempty"`
-	DueDate     string   `json:"due_date,omitempty"`
-	Priority    *int64   `json:"priority,omitempty"`
-	ProjectID   *int64   `json:"project_id,omitempty"`
-	Labels      []int64  `json:"labels,omitempty"`
+	Title       string     `json:"title,omitempty"`
+	Description string     `json:"description,omitempty"`
+	Done        *bool      `json:"done,omitempty"`
+	DueDate     string     `json:"due_date,omitempty"`
+	Priority    *int64     `json:"priority,omitempty"`
+	ProjectID   *int64     `json:"project_id,omitempty"`
+	Labels      []LabelRef `json:"labels,omitempty"`
 }
 
 func (c *Client) UpdateTask(id int64, params UpdateTaskParams) (*Task, error) {
@@ -408,5 +412,86 @@ func (c *Client) AddTaskAssignee(taskID, userID int64) error {
 
 func (c *Client) RemoveTaskAssignee(taskID, userID int64) error {
 	_, err := c.delete("/api/v1/tasks/" + strconv.FormatInt(taskID, 10) + "/assignees/" + strconv.FormatInt(userID, 10))
+	return err
+}
+
+type ProjectView struct {
+	ID                  int64  `json:"id"`
+	Title               string `json:"title"`
+	ProjectID           int64  `json:"project_id"`
+	ViewKind            string `json:"view_kind"`
+	DefaultBucketID     int64  `json:"default_bucket_id"`
+	DoneBucketID        int64  `json:"done_bucket_id"`
+	BucketConfiguration string `json:"bucket_configuration_mode"`
+	Position            float64 `json:"position"`
+}
+
+func (c *Client) ListProjectViews(projectID int64) ([]ProjectView, error) {
+	body, err := c.get("/api/v1/projects/" + strconv.FormatInt(projectID, 10) + "/views")
+	if err != nil {
+		return nil, err
+	}
+	var views []ProjectView
+	if err := json.Unmarshal(body, &views); err != nil {
+		return nil, fmt.Errorf("unmarshal views: %w", err)
+	}
+	return views, nil
+}
+
+type Bucket struct {
+	ID            int64  `json:"id"`
+	Title         string `json:"title"`
+	ProjectViewID int64  `json:"project_view_id"`
+	Count         int64  `json:"count"`
+	Position      float64 `json:"position"`
+	Limit         int64  `json:"limit"`
+}
+
+func (c *Client) ListBuckets(projectID, viewID int64) ([]Bucket, error) {
+	body, err := c.get("/api/v1/projects/" + strconv.FormatInt(projectID, 10) + "/views/" + strconv.FormatInt(viewID, 10) + "/buckets")
+	if err != nil {
+		return nil, err
+	}
+	var buckets []Bucket
+	if err := json.Unmarshal(body, &buckets); err != nil {
+		return nil, fmt.Errorf("unmarshal buckets: %w", err)
+	}
+	return buckets, nil
+}
+
+type TaskBucketParams struct {
+	TaskID int64 `json:"task_id"`
+}
+
+func (c *Client) MoveTaskToBucket(projectID, viewID, bucketID, taskID int64) error {
+	_, err := c.post(
+		"/api/v1/projects/"+strconv.FormatInt(projectID, 10)+
+			"/views/"+strconv.FormatInt(viewID, 10)+
+			"/buckets/"+strconv.FormatInt(bucketID, 10)+"/tasks",
+		TaskBucketParams{TaskID: taskID},
+	)
+	return err
+}
+
+func (c *Client) AddTaskLabel(taskID, labelID int64) error {
+	_, err := c.put("/api/v1/tasks/"+strconv.FormatInt(taskID, 10)+"/labels", LabelRef{ID: labelID})
+	return err
+}
+
+func (c *Client) RemoveTaskLabel(taskID, labelID int64) error {
+	_, err := c.delete("/api/v1/tasks/" + strconv.FormatInt(taskID, 10) + "/labels/" + strconv.FormatInt(labelID, 10))
+	return err
+}
+
+type BulkLabelsParams struct {
+	Labels []LabelRef `json:"labels"`
+}
+
+func (c *Client) BulkUpdateTaskLabels(taskID int64, labelIDs []int64) error {
+	refs := make([]LabelRef, len(labelIDs))
+	for i, id := range labelIDs {
+		refs[i] = LabelRef{ID: id}
+	}
+	_, err := c.post("/api/v1/tasks/"+strconv.FormatInt(taskID, 10)+"/labels/bulk", BulkLabelsParams{Labels: refs})
 	return err
 }
