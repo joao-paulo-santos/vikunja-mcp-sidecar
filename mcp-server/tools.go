@@ -37,6 +37,8 @@ func registerTools(s *server.MCPServer, deps *toolDeps) {
 	s.AddTool(removeTaskLabelTool(), deps.handleRemoveTaskLabel)
 	s.AddTool(listViewsTool(), deps.handleListViews)
 	s.AddTool(listBucketsTool(), deps.handleListBuckets)
+	s.AddTool(createBucketTool(), deps.handleCreateBucket)
+	s.AddTool(deleteBucketTool(), deps.handleDeleteBucket)
 	s.AddTool(moveTaskToBucketTool(), deps.handleMoveTaskToBucket)
 }
 
@@ -254,6 +256,25 @@ func parseIntList(s string) []int64 {
 	return ids
 }
 
+func (d *toolDeps) resolveViewID(projectID int64, viewIDArg int) (int64, error) {
+	if viewIDArg > 0 {
+		return int64(viewIDArg), nil
+	}
+	views, err := d.client.ListProjectViews(projectID)
+	if err != nil {
+		return 0, fmt.Errorf("list views: %v", err)
+	}
+	for _, v := range views {
+		if v.ViewKind == "kanban" {
+			return v.ID, nil
+		}
+	}
+	if len(views) > 0 {
+		return views[0].ID, nil
+	}
+	return 0, fmt.Errorf("no views found for project %d", projectID)
+}
+
 func (d *toolDeps) handleCreateTask(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	projectID, err := req.RequireInt("project_id")
 	if err != nil {
@@ -316,42 +337,50 @@ func (d *toolDeps) handleUpdateTask(_ context.Context, req mcp.CallToolRequest) 
 		return toolError("id: %v", err)
 	}
 
-	params := UpdateTaskParams{}
-	if v, ok := req.GetArguments()["title"]; ok {
-		params.Title = v.(string)
+	task, err := d.client.GetTask(int64(id))
+	if err != nil {
+		return toolError("get task: %v", err)
 	}
-	if v, ok := req.GetArguments()["description"]; ok {
-		params.Description = v.(string)
-	}
-	if v, ok := req.GetArguments()["done"]; ok {
-		b := v.(bool)
-		params.Done = &b
-	}
-	if v, ok := req.GetArguments()["due_date"]; ok {
-		params.DueDate = v.(string)
-	}
-	if v, ok := req.GetArguments()["priority"]; ok {
-		switch val := v.(type) {
-		case int:
-			p := int64(val)
-			params.Priority = &p
-		case float64:
-			p := int64(val)
-			params.Priority = &p
+
+	args := req.GetArguments()
+	if v, ok := args["title"]; ok && v != nil {
+		if s, ok := v.(string); ok {
+			task.Title = s
 		}
 	}
-	if v, ok := req.GetArguments()["project_id"]; ok {
+	if v, ok := args["description"]; ok && v != nil {
+		if s, ok := v.(string); ok {
+			task.Description = s
+		}
+	}
+	if v, ok := args["done"]; ok && v != nil {
+		if b, ok := v.(bool); ok {
+			task.Done = b
+		}
+	}
+	if v, ok := args["due_date"]; ok && v != nil {
+		if s, ok := v.(string); ok {
+			task.DueDate = s
+		}
+	}
+	if v, ok := args["priority"]; ok && v != nil {
 		switch val := v.(type) {
 		case int:
-			p := int64(val)
-			params.ProjectID = &p
+			task.Priority = int64(val)
 		case float64:
-			p := int64(val)
-			params.ProjectID = &p
+			task.Priority = int64(val)
+		}
+	}
+	if v, ok := args["project_id"]; ok && v != nil {
+		switch val := v.(type) {
+		case int:
+			task.ProjectID = int64(val)
+		case float64:
+			task.ProjectID = int64(val)
 		}
 	}
 
-	task, err := d.client.UpdateTask(int64(id), params)
+	updated, err := d.client.FullUpdateTask(task)
 	if err != nil {
 		return toolError("update task: %v", err)
 	}
@@ -360,10 +389,10 @@ func (d *toolDeps) handleUpdateTask(_ context.Context, req mcp.CallToolRequest) 
 		if err := d.client.BulkUpdateTaskLabels(int64(id), labelIDs); err != nil {
 			return toolError("update labels: %v", err)
 		}
-		task, _ = d.client.GetTask(int64(id))
+		updated, _ = d.client.GetTask(int64(id))
 	}
 
-	return toolResult(task)
+	return toolResult(updated)
 }
 
 func deleteTaskTool() mcp.Tool {
@@ -619,26 +648,9 @@ func (d *toolDeps) handleListBuckets(_ context.Context, req mcp.CallToolRequest)
 		return toolError("project_id: %v", err)
 	}
 
-	var viewID int64
-	if v := req.GetInt("view_id", 0); v > 0 {
-		viewID = int64(v)
-	} else {
-		views, err := d.client.ListProjectViews(int64(projectID))
-		if err != nil {
-			return toolError("list views: %v", err)
-		}
-		for _, v := range views {
-			if v.ViewKind == "kanban" {
-				viewID = v.ID
-				break
-			}
-		}
-		if viewID == 0 && len(views) > 0 {
-			viewID = views[0].ID
-		}
-	}
-	if viewID == 0 {
-		return toolError("no views found for project %d", projectID)
+	viewID, err := d.resolveViewID(int64(projectID), req.GetInt("view_id", 0))
+	if err != nil {
+		return toolError("%v", err)
 	}
 
 	buckets, err := d.client.ListBuckets(int64(projectID), viewID)
@@ -672,31 +684,76 @@ func (d *toolDeps) handleMoveTaskToBucket(_ context.Context, req mcp.CallToolReq
 		return toolError("bucket_id: %v", err)
 	}
 
-	var viewID int64
-	if v := req.GetInt("view_id", 0); v > 0 {
-		viewID = int64(v)
-	} else {
-		views, err := d.client.ListProjectViews(int64(projectID))
-		if err != nil {
-			return toolError("list views: %v", err)
-		}
-		for _, v := range views {
-			if v.ViewKind == "kanban" {
-				viewID = v.ID
-				break
-			}
-		}
-		if viewID == 0 && len(views) > 0 {
-			viewID = views[0].ID
-		}
-	}
-	if viewID == 0 {
-		return toolError("no views found for project %d", projectID)
+	viewID, err := d.resolveViewID(int64(projectID), req.GetInt("view_id", 0))
+	if err != nil {
+		return toolError("%v", err)
 	}
 
 	if err := d.client.MoveTaskToBucket(int64(projectID), viewID, int64(bucketID), int64(taskID)); err != nil {
 		return toolError("move task: %v", err)
 	}
 	return mcp.NewToolResultText(fmt.Sprintf("Task %d moved to bucket %d", taskID, bucketID)), nil
+}
+
+func createBucketTool() mcp.Tool {
+	return mcp.NewTool("create_bucket",
+		mcp.WithDescription("Create a new Kanban bucket in a project."),
+		mcp.WithInteger("project_id", mcp.Required(), mcp.Description("The project ID")),
+		mcp.WithString("title", mcp.Required(), mcp.Description("Bucket title (e.g. \"Applied\", \"Interviewing\")")),
+		mcp.WithInteger("view_id", mcp.Description("The kanban view ID (auto-discovered if omitted)")),
+	)
+}
+
+func (d *toolDeps) handleCreateBucket(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	projectID, err := req.RequireInt("project_id")
+	if err != nil {
+		return toolError("project_id: %v", err)
+	}
+	title, err := req.RequireString("title")
+	if err != nil {
+		return toolError("title: %v", err)
+	}
+
+	viewID, err := d.resolveViewID(int64(projectID), req.GetInt("view_id", 0))
+	if err != nil {
+		return toolError("%v", err)
+	}
+
+	bucket, err := d.client.CreateBucket(int64(projectID), viewID, title)
+	if err != nil {
+		return toolError("create bucket: %v", err)
+	}
+	return toolResult(bucket)
+}
+
+func deleteBucketTool() mcp.Tool {
+	return mcp.NewTool("delete_bucket",
+		mcp.WithDescription("Delete a Kanban bucket. Tasks in the bucket are dissociated, not deleted. Cannot delete the last bucket."),
+		mcp.WithDestructiveHintAnnotation(true),
+		mcp.WithInteger("project_id", mcp.Required(), mcp.Description("The project ID")),
+		mcp.WithInteger("bucket_id", mcp.Required(), mcp.Description("The bucket ID to delete")),
+		mcp.WithInteger("view_id", mcp.Description("The kanban view ID (auto-discovered if omitted)")),
+	)
+}
+
+func (d *toolDeps) handleDeleteBucket(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	projectID, err := req.RequireInt("project_id")
+	if err != nil {
+		return toolError("project_id: %v", err)
+	}
+	bucketID, err := req.RequireInt("bucket_id")
+	if err != nil {
+		return toolError("bucket_id: %v", err)
+	}
+
+	viewID, err := d.resolveViewID(int64(projectID), req.GetInt("view_id", 0))
+	if err != nil {
+		return toolError("%v", err)
+	}
+
+	if err := d.client.DeleteBucket(int64(projectID), viewID, int64(bucketID)); err != nil {
+		return toolError("delete bucket: %v", err)
+	}
+	return mcp.NewToolResultText(fmt.Sprintf("Bucket %d deleted", bucketID)), nil
 }
 

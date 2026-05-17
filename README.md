@@ -6,6 +6,8 @@ An MCP (Model Context Protocol) server that runs as a Docker sidecar alongside [
 
 - Full project CRUD (create, read, update, delete)
 - Full task CRUD with priorities, due dates, and labels
+- Task labels can be set at creation time
+- Kanban bucket CRUD and task movement
 - Task comments
 - Label management
 - Namespace listing
@@ -39,6 +41,8 @@ An MCP (Model Context Protocol) server that runs as a Docker sidecar alongside [
 | `remove_task_label` | Remove a label from a task |
 | `list_views` | List all views (list, gantt, table, kanban) for a project |
 | `list_buckets` | List Kanban buckets for a project view |
+| `create_bucket` | Create a new Kanban bucket |
+| `delete_bucket` | Delete a Kanban bucket |
 | `move_task_to_bucket` | Move a task to a different Kanban bucket |
 
 ## Quick Start

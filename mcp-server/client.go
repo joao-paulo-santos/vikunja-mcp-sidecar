@@ -318,6 +318,18 @@ func (c *Client) UpdateTask(id int64, params UpdateTaskParams) (*Task, error) {
 	return &task, nil
 }
 
+func (c *Client) FullUpdateTask(task *Task) (*Task, error) {
+	body, err := c.post("/api/v1/tasks/"+strconv.FormatInt(task.ID, 10), task)
+	if err != nil {
+		return nil, err
+	}
+	var updated Task
+	if err := json.Unmarshal(body, &updated); err != nil {
+		return nil, fmt.Errorf("unmarshal task: %w", err)
+	}
+	return &updated, nil
+}
+
 func (c *Client) DeleteTask(id int64) error {
 	_, err := c.delete("/api/v1/tasks/" + strconv.FormatInt(id, 10))
 	return err
@@ -469,6 +481,35 @@ func (c *Client) MoveTaskToBucket(projectID, viewID, bucketID, taskID int64) err
 			"/views/"+strconv.FormatInt(viewID, 10)+
 			"/buckets/"+strconv.FormatInt(bucketID, 10)+"/tasks",
 		TaskBucketParams{TaskID: taskID},
+	)
+	return err
+}
+
+type CreateBucketParams struct {
+	Title string `json:"title"`
+}
+
+func (c *Client) CreateBucket(projectID, viewID int64, title string) (*Bucket, error) {
+	body, err := c.put(
+		"/api/v1/projects/"+strconv.FormatInt(projectID, 10)+
+			"/views/"+strconv.FormatInt(viewID, 10)+"/buckets",
+		CreateBucketParams{Title: title},
+	)
+	if err != nil {
+		return nil, err
+	}
+	var bucket Bucket
+	if err := json.Unmarshal(body, &bucket); err != nil {
+		return nil, fmt.Errorf("unmarshal bucket: %w", err)
+	}
+	return &bucket, nil
+}
+
+func (c *Client) DeleteBucket(projectID, viewID, bucketID int64) error {
+	_, err := c.delete(
+		"/api/v1/projects/" + strconv.FormatInt(projectID, 10) +
+			"/views/" + strconv.FormatInt(viewID, 10) +
+			"/buckets/" + strconv.FormatInt(bucketID, 10),
 	)
 	return err
 }
