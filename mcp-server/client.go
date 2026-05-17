@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
 )
 
 type Client struct {
@@ -58,20 +60,76 @@ func (c *Client) doRequest(method, path string, body any) ([]byte, error) {
 	return respBody, nil
 }
 
+const (
+	maxRetries     = 5
+	retryBaseDelay = 50 * time.Millisecond
+)
+
+func isRetryable(statusCode int, body string) bool {
+	if statusCode != 500 {
+		return false
+	}
+	return strings.Contains(body, "database is locked")
+}
+
+func (c *Client) doRequestWithRetry(method, path string, body any) ([]byte, error) {
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		var reqBody io.Reader
+		if body != nil {
+			data, err := json.Marshal(body)
+			if err != nil {
+				return nil, fmt.Errorf("marshal body: %w", err)
+			}
+			reqBody = bytes.NewReader(data)
+		}
+
+		req, err := http.NewRequest(method, c.BaseURL+path, reqBody)
+		if err != nil {
+			return nil, fmt.Errorf("create request: %w", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := c.HTTPClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("execute request: %w", err)
+		}
+
+		respBody, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("read response: %w", err)
+		}
+
+		if isRetryable(resp.StatusCode, string(respBody)) && attempt < maxRetries {
+			delay := retryBaseDelay * time.Duration(1<<uint(attempt))
+			time.Sleep(delay)
+			continue
+		}
+
+		if resp.StatusCode >= 400 {
+			return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(respBody))
+		}
+
+		return respBody, nil
+	}
+	return nil, fmt.Errorf("API error: database is locked after %d retries", maxRetries)
+}
+
 func (c *Client) get(path string) ([]byte, error) {
 	return c.doRequest("GET", path, nil)
 }
 
 func (c *Client) put(path string, body any) ([]byte, error) {
-	return c.doRequest("PUT", path, body)
+	return c.doRequestWithRetry("PUT", path, body)
 }
 
 func (c *Client) post(path string, body any) ([]byte, error) {
-	return c.doRequest("POST", path, body)
+	return c.doRequestWithRetry("POST", path, body)
 }
 
 func (c *Client) delete(path string) ([]byte, error) {
-	return c.doRequest("DELETE", path, nil)
+	return c.doRequestWithRetry("DELETE", path, nil)
 }
 
 type Project struct {
